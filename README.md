@@ -32,10 +32,13 @@ This repository implements **ViT4TS** (vision-screening) and **VLM4TS** (VLM-bas
 3.	Install dependencies (listed in requirements.txt):
 
 4. Data Preparation
+   
 	1.	Download the benchmark datasets into data/raw/:
+    
 - NAB: https://github.com/numenta/NAB
 - NASA SMAP & MSL: https://github.com/khundman/telemanom
 - Yahoo S5: https://webscope.sandbox.yahoo.com/catalog.php?datatype=s&did=70
+  
 	2.	Convert each dataset into the Orion standard format (See https://github.com/sintel-dev/Orion for details).
 
 5. Run ViT4TS (Screening)
@@ -59,9 +62,8 @@ This will:
 - Prompt the VLM (e.g. GPT-4o via API) with proposals for global-context verification.
 - Output final detections, evaluation metrics.
 
-⸻
 
-📜 License
+## 📜 License
 
 This project is released under the MIT License.
 
