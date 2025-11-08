@@ -63,8 +63,7 @@ if __name__ == "__main__":
             "--agg_percent",      str(args.agg_percent),
             "--plot_types",       *args.plot_types,
             "--n_shot",           args.n_shot,
-            "--no_anomaly"        if args.no_anomaly else "",
-            "--semi_supervised"   if args.semi_supervised else ""
+            "--no_anomaly"        if args.no_anomaly else ""
         ]
         cmd = [c for c in cmd if c]
 

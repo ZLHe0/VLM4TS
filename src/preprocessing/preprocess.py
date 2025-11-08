@@ -90,27 +90,21 @@ def process_dataset(dataset_name, data_dir, results_base_dir, transform_types,
                     image_size=(240,240),
                     plot_params=('-', 1, '*', 2, 'black', None), save_image=False,
                     use_count_as_timepoints=True, standardization=True):
-    """                                    
+    """
     Process a dataset by drawing windowed images for each time series file.
-    
+
     For each file, the time series is loaded and windowed using a sliding window.
-    For univariate series, the CSV is assumed to have columns: 'value' and 'timestamp'.
-    For multivariate series (if multivariate=True), the CSV is read from the subfolder 
-    {data_dir}/multivariate and is assumed to have a 'timestamp' column and additional 
-    feature columns (e.g. '0', '1', ...). For multivariate data, each feature is standardized 
-    individually and multiplied by a scaling factor to separate them vertically (e.g., 1, 1.05, 
-    1.10, ...). The y-axis limit is set to [0, max_factor].
-    
-    Time points, window sizes, and anomaly intervals are determined similarly for both cases.
-    Finally, the processed time series (shape [T] for univariate or [T, F] for multivariate) is 
-    fed into draw_windowed_images() to produce windowed images.
-    
+    The CSV is assumed to have columns: 'value' and 'timestamp'.
+
+    Time points, window sizes, and anomaly intervals are determined from the CSV data.
+    The processed time series (shape [T]) is fed into draw_windowed_images() to produce windowed images.
+
     Parameters
     ----------
     dataset_name : str
         Name of the dataset to process (e.g. 'artificialWithAnomaly').
     data_dir : str
-        Directory where the raw CSV files and datasets_multivariate.csv are stored.
+        Directory where the raw CSV files are stored.
     results_base_dir : str
         Base directory where the results will be saved.
     transform_types : list of str
@@ -122,7 +116,7 @@ def process_dataset(dataset_name, data_dir, results_base_dir, transform_types,
     plot_step_size : int or None, optional
         Fixed step size (used if n_windows is None).
     file_list : list of str, optional
-        List of file names to process. If None, all files from the metadata are used.
+        List of file names to process. If None, datasets_multivariate.csv must exist to load file list.
     override : bool, optional
         Whether to overwrite existing files (default: True).
     dpi : int, optional
@@ -131,43 +125,31 @@ def process_dataset(dataset_name, data_dir, results_base_dir, transform_types,
         Output image size in pixels (height, width); default is (240,240).
     plot_params : tuple, optional
         Plot styling parameters for a line plot: (linestyle, linewidth, marker, markersize, color, y_scale).
-        For multivariate series, y_scale will be computed automatically.
-    method : str, optional
-        Method for the GAF transform (e.g., 'summation').
-    threshold : str, optional
-        Threshold type for the RP transform (e.g., 'point').
-    percentage : float, optional
-        Percentage parameter for the RP transform.
     use_count_as_timepoints : bool, optional
         If True, ignore the 'timestamp' column and use a count (0 to T-1) as time points.
     standardization : bool, optional
         If True, perform detrending and min–max standardization.
-    multivariate : bool, optional
-        If True, process the dataset as multivariate. For multivariate, CSV files are located in
-        {data_dir}/multivariate and expected to have multiple feature columns.
-    
+
     Returns
     -------
     None
     """
-    # Load the datasets metadata.
-    meta_path = os.path.join(data_dir, 'datasets_multivariate.csv')
-    datasets_meta = pd.read_csv(meta_path, header=None, names=['dataset', 'files'])
-    
-    # Filter for the specified dataset.
-    dataset_meta = datasets_meta[datasets_meta['dataset'].str.strip() == dataset_name]
-    if dataset_meta.empty:
-        print(f"No metadata found for '{dataset_name}' dataset.")
-        return
-    
-    # If file_list is not provided, load all files from the metadata.
+    # If file_list is not provided, load it from the datasets metadata.
     if file_list is None:
+        meta_path = os.path.join(data_dir, 'datasets_multivariate.csv')
+        if not os.path.exists(meta_path):
+            print(f"Error: datasets_multivariate.csv not found at {meta_path} and no file_list provided.")
+            return
+        datasets_meta = pd.read_csv(meta_path, header=None, names=['dataset', 'files'])
+
+        # Filter for the specified dataset.
+        dataset_meta = datasets_meta[datasets_meta['dataset'].str.strip() == dataset_name]
+        if dataset_meta.empty:
+            print(f"No metadata found for '{dataset_name}' dataset.")
+            return
+
         file_list = ast.literal_eval(dataset_meta.iloc[0]['files'])
-    
-    # For multivariate datasets, adjust the data directory.
-    if multivariate:
-        data_dir = os.path.join(data_dir, "multivariate")
-    
+
     # Process each file in file_list.
     for file_name in file_list:
         # Define a results directory for this file.
@@ -235,7 +217,7 @@ def process_dataset(dataset_name, data_dir, results_base_dir, transform_types,
         
         # Process anomaly intervals.
         if anomaly_intervals is not None and use_count_as_timepoints:
-            if not multivariate and 'timestamp' in ts_df.columns:
+            if 'timestamp' in ts_df.columns:
                 original_timestamps = ts_df['timestamp'].tolist()
                 anomaly_intervals_proc = []
                 for interval in anomaly_intervals:
@@ -250,10 +232,6 @@ def process_dataset(dataset_name, data_dir, results_base_dir, transform_types,
         
         # --- Draw windowed images ---
         for transform in transform_types:
-            # For multivariate, only allow 'line' transform.
-            if multivariate and transform.lower() != "line":
-                warnings.warn(f"For multivariate series, only 'line' transform is supported. Skipping transform {transform}.")
-                continue
             draw_windowed_images(
                 base_series_id=base_series_id,
                 save_path=file_results_dir,
