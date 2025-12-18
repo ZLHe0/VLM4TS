@@ -1,0 +1,18 @@
+.env
+
+# test folder
+test/
+# data
+data/
+
+# Python artifacts
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+.DS_Store?
+results_*.csv
