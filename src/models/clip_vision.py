@@ -58,10 +58,10 @@ def multi_scale_aggregation(patch_tokens, patch_size, mask_helper):
 
 
 class CLIP_AD(nn.Module):
-    def __init__(self, model_name='ViT-B-16-plus-240', device=None, image_size=(240, 240)):
+    def __init__(self, model_name='ViT-B-16', device=None, image_size=(224, 224)):
         """
         Initialize the CLIP_AD model.
-        
+
         Parameters
         ----------
         model_name : str, optional
@@ -75,21 +75,22 @@ class CLIP_AD(nn.Module):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
-        
+
+        # Only specify output_tokens in vision_cfg
         vision_cfg = {
-          "output_tokens": True,  # Enable token output
-          "width": 896,
-          "image_size": 240,
-          "layers": 12,
-          "patch_size": 16
+          "output_tokens": True  # Enable token output
         }
-        # Create the vanilla CLIP model and its transforms.
-        self.model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained='laion400m_e31',
-                                                                 vision_cfg=vision_cfg)
+
+        # Create the vanilla CLIP model and its transforms
+        self.model, _, _ = open_clip.create_model_and_transforms(
+            model_name,
+            pretrained='openai',
+            vision_cfg=vision_cfg
+        )
         self.model = self.model.to(self.device)
         self.image_size = image_size
 
-        # Create a patch-scale helper instance.
+        # Create a patch-scale helper instance
         self.mask = patch_scale(image_size=image_size)
     
     def encode_text(self, text):

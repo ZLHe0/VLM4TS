@@ -1,10 +1,16 @@
-torch
-torchvision
-numpy
-pandas
-matplotlib
-open_clip_torch
-openai
-tqdm
-scikit-learn
-Pillow
+# Python version: 3.10
+
+# Core dependencies with pinned versions
+torch==2.9.1
+torchvision==0.24.1
+numpy==2.2.6
+pandas==2.3.3
+matplotlib==3.10.8
+open_clip_torch==3.2.0
+openai==2.11.0
+tqdm==4.67.1
+scikit-learn==1.7.2
+scipy==1.15.3
+Pillow==12.0.0
+python-dotenv==1.2.1
+requests==2.32.5

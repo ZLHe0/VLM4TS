@@ -1,16 +1,11 @@
+import math
 import torch
 import torch.nn.functional as F
 from collections import defaultdict
-from tqdm import tqdm
-import pdb
 import numpy as np
+from scipy.stats import norm
+import pandas as pd
 
-# Setup the working dir
-import sys
-import os
-local_openclip_path = os.path.join(os.getcwd(), "../")
-sys.path.insert(0, local_openclip_path)
-from open_clip import tokenizer
 
 ### Multi-scale patching Technique ###
 class patch_scale():
@@ -28,18 +23,6 @@ class patch_scale():
         return patchfy
 
 ### evaluation utility function ###
-def compute_score(image_features, text_features):
-    image_features /= image_features.norm(dim=1, keepdim=True)
-    text_features /= text_features.norm(dim=1, keepdim=True)
-    text_probs = (torch.bmm(image_features.unsqueeze(1), text_features)/0.07).softmax(dim=-1)
-    return text_probs
-
-def compute_sim(image_features, text_features):
-    image_features /= image_features.norm(dim=-1, keepdim=True)
-    text_features /= text_features.norm(dim=1, keepdim=True)
-    similarity = (torch.bmm(image_features.squeeze(2), text_features)/0.07).softmax(dim=-1)
-    return similarity
-
 def harmonic_aggregation(score_size, similarity, mask):
     b, h, w = score_size
     similarity = similarity.double()
@@ -58,15 +41,15 @@ def harmonic_aggregation(score_size, similarity, mask):
     return score.view(b, h, w)
 
 
-### Few-shot Learning Utility Functions ###
-def few_shot(
+### Patch Dissimilarity Utility Functions ###
+def compute_patch_dissimilarity(
     memory: dict,
     token: torch.Tensor,
     cls_names: list[str],
     row_wise: bool = False
 ) -> torch.Tensor:
     """
-    Few-shot matching with optional row-wise constraint.
+    Compute patch dissimilarity by comparing test patches against memory bank.
 
     Parameters
     ----------
@@ -98,7 +81,7 @@ def few_shot(
         if mem.ndim == 4 and mem.shape[2] == 1:
             mem = mem.squeeze(2)  # [L, N, D]
         # median over L -> [N, D]
-        medianed.append(torch.median(mem, dim=0).values)  ## TEST MEAN
+        medianed.append(torch.median(mem, dim=0).values)
     retrieved = torch.stack(medianed, dim=0)          # [B, N, D]
     retrieved_norm = F.normalize(retrieved, dim=-1)   # [B, N, D]
 
@@ -193,75 +176,6 @@ def build_memory(model, test_dataloader, patch_size, device):
     return dict(large_memory), dict(mid_memory), dict(patch_memory)
 
 
-
-def downsample_mask(anomaly_mask, target_shape, alpha=0):
-    """
-    Downsample a binary anomaly mask (values 0 or 1) to a token-level mask
-    using a majority vote with adjustable sensitivity. A patch is set as anomalous
-    if the average value in its block is greater than alpha.
-    
-    Parameters
-    ----------
-    anomaly_mask : torch.Tensor
-        Tensor of shape [H, W] with binary values.
-    target_shape : tuple
-        Desired output shape (target_H, target_W) for the downsampled mask.
-    alpha : float, optional
-        Threshold value for labeling a block as anomalous. Default is 0.5.
-    
-    Returns
-    -------
-    down_mask : torch.Tensor
-        Flattened tensor of shape [target_H * target_W] with binary values (0 or 1).
-    """
-    # Use adaptive average pooling so that each output pixel is the average of a block.
-    down_mask = F.adaptive_avg_pool2d(anomaly_mask.unsqueeze(0).unsqueeze(0).float(),
-                                      target_shape)
-    # Apply the adjustable threshold.
-    down_mask = (down_mask > alpha).float()
-    down_mask = down_mask.squeeze()  # shape: [target_H, target_W]
-    return down_mask.view(-1)        # Flatten to [target_H * target_W]
-
-def refine_patch_mask(tokens: torch.Tensor,
-                      mask: torch.Tensor,
-                      keep_frac: float = 0.25) -> torch.Tensor:
-    """
-    Given:
-      tokens:    [N, D]  — the per‐patch embeddings (already squeezed)
-      mask:      [N]     — the binary downsampled mask (0/1)
-      keep_frac: float   — fraction of flagged patches to keep
-
-    Return a new mask of shape [N], where only the top keep_frac fraction
-    of originally flagged patches (by dissimilarity to *all* other patches)
-    remain =1, the rest =0.
-    """
-    # If tokens have shape [N, 1, D], squeeze to [N, D]
-    if tokens.ndim == 3 and tokens.shape[1] == 1:
-        tokens = tokens.squeeze(1)  # now [N, D]
-    N, D = tokens.shape
-    # 1) normalize
-    z = F.normalize(tokens, dim=-1)      # [N, D]
-    # 2) pairwise cosine similarity
-    sim = z @ z.transpose(0,1)           # [N, N]
-    # 3) dissimilarity score per patch (here average across peers)
-    dissim = 1.0 - sim                   # [N, N]
-    score = dissim.mean(dim=1)           # [N]
-
-    # 4) only consider originally flagged patches
-    idxs = torch.nonzero(mask, as_tuple=True)[0]
-    if idxs.numel() == 0:
-        return mask  # nothing to refine
-
-    # 5) pick top-k
-    k = max(1, int(idxs.numel() * keep_frac))
-    topk_in_flagged = score[idxs].topk(k, largest=True).indices
-    chosen = idxs[topk_in_flagged]
-
-    # 6) build new mask
-    new_mask = torch.zeros_like(mask)
-    new_mask[chosen] = 1
-    return new_mask
-
 ### Aggregation Anomaly Maps Utility Functions ###
 def aggregate_anomaly_map(anomaly_map, top_percent):
     """
@@ -338,3 +252,180 @@ def stitch_anomaly_maps(anomaly_maps, window_step_ratio, agg_percent):
     count[count == 0] = 1  # Prevent division by zero.
     final_scores = final_scores / count
     return final_scores
+
+def compute_detection_intervals(
+    score_vector,
+    alpha,
+    method="mean",
+    smoothing=True,
+    sliding=False,
+    anomaly_padding=0
+):
+    """
+    Given an anomaly score vector, compute detection intervals using either
+    global thresholding or a sliding-window threshold, and optionally
+    smooth the scores first via an exponentially-weighted moving average.
+
+    Parameters
+    ----------
+    score_vector : array-like, shape (T,)
+        The aligned anomaly score vector.
+    alpha : float
+        The upper quantile for thresholding (e.g. 0.05 ⇒ top 5%).
+    method : {'mean', 'median'}, default='mean'
+        Whether to compute central tendency + spread as (mean, std) or
+        (median, MAD).
+    smoothing : bool, default=False
+        If True, first replace `score_vector` with its EWMA (alpha = smoothing_alpha).
+    smoothing_alpha : float in (0,1), default=0.3
+        The alpha for the EWMA if `smoothing=True`.
+    sliding : bool, default=False
+        If True, compute a local threshold in a sliding window (size T/3, step T/10)
+        and mark any point exceeding its window's threshold as anomalous.
+        Otherwise use a single global threshold.
+    anomaly_padding : int, default=0
+        Number of time points to pad before and after each detected interval.
+
+    Returns
+    -------
+    detection_intervals : list of (start, end) tuples
+        Contiguous index ranges (padded) where the (smoothed) score exceeds the threshold.
+    threshold : float or None
+        The global threshold (if sliding=False), else None.
+    scores : np.ndarray
+        The (optionally smoothed) score vector.
+    """
+    scores = np.array(score_vector, dtype=float)
+    T = len(scores)
+
+    if smoothing:
+        span = max(1, int(len(scores) * 0.01))
+        scores = pd.Series(scores).ewm(span=span).mean().values
+
+    # Precompute the Gaussian multiplier
+    z = norm.ppf(1 - alpha)
+
+    # 2) Build a boolean mask of anomalies
+    anomaly_flags = np.zeros(T, dtype=bool)
+
+    if not sliding:
+        # 2a) Global threshold
+        if method == "mean":
+            central = scores.mean()
+            spread  = scores.std()
+        elif method == "median":
+            central = np.median(scores)
+            spread  = np.median(np.abs(scores - central))
+        else:
+            raise ValueError("method must be 'mean' or 'median'")
+        threshold = central + z * spread
+        anomaly_flags = scores > threshold
+
+    else:
+        # 2b) Sliding‑window threshold
+        threshold = 0 # With sliding window based method, threshold varies.
+        win = max(1, T // 3)
+        step = max(1, T // 10)
+        for start in range(0, T, step):
+            end = min(start + win, T)
+            segment = scores[start:end]
+            if method == "mean":
+                central = segment.mean()
+                spread  = segment.std()
+            else:  # median
+                central = np.median(segment)
+                spread  = np.median(np.abs(segment - central))
+            thresh_local = central + z * spread
+            # mark any point in [start:end) above its local thresh
+            anomaly_flags[start:end] |= (segment > thresh_local)
+
+    # 3) Extract contiguous intervals from the boolean mask
+    detection_intervals = []
+    in_int = False
+    for i, flag in enumerate(anomaly_flags):
+        if flag and not in_int:
+            in_int = True
+            start = i
+        elif not flag and in_int:
+            in_int = False
+            detection_intervals.append((start, i-1))
+    if in_int:
+        detection_intervals.append((start, T-1))
+
+
+    # 4) Apply padding if requested
+    if anomaly_padding > 0:
+        padded = []
+        for (s, e) in detection_intervals:
+            s_pad = max(0, s - anomaly_padding)
+            e_pad = min(T - 1, e + anomaly_padding)
+            padded.append((s_pad, e_pad))
+
+        # If nothing was detected, stay empty
+        if not padded:
+            detection_intervals = []
+        else:
+            # 5) Merge overlapping or contiguous intervals
+            padded.sort(key=lambda x: x[0])
+            merged = []
+            cur_s, cur_e = padded[0]
+            for s_next, e_next in padded[1:]:
+                if s_next <= cur_e + 1:   # overlap or contiguous
+                    cur_e = max(cur_e, e_next)
+                else:
+                    merged.append((cur_s, cur_e))
+                    cur_s, cur_e = s_next, e_next
+            merged.append((cur_s, cur_e))
+
+            detection_intervals = merged
+    
+    return detection_intervals, threshold, scores
+    
+def align_anomaly_vector(final_vector, T_full, window_size, step_size, n_windows):
+    """
+    Align the stitched anomaly vector to the original time series length T_full,
+    by first interpolating it out to the full covered span of your sliding windows,
+    then extrapolating or truncating to exactly T_full.
+
+    Parameters
+    ----------
+    final_vector : np.ndarray
+        The stitched anomaly vector of length L (one score per column in the overlap).
+    T_full : int
+        The total number of time points in the original series.
+    window_size : int
+        Number of time points per window.
+    step_size : int
+        Step size between windows.
+    n_windows : int
+        Number of windows used in the sliding-window imagery.
+
+    Returns
+    -------
+    aligned_vector : np.ndarray
+        A 1D array of length T_full.
+    """
+    # 1) compute the total span covered by your windows
+    covered_length = window_size + (n_windows - 1) * step_size
+
+    L = len(final_vector)
+    # 2) interpolate final_vector (length L) → covered_length
+    x_old = np.arange(L)
+    x_new = np.linspace(0, L - 1, covered_length)
+    interp = np.interp(x_new, x_old, final_vector)
+
+    # 3) now align to T_full
+    if covered_length < T_full:
+        # linear extrapolation past the end
+        if covered_length > 1:
+            slope = interp[-1] - interp[-2]
+        else:
+            slope = 0.0
+        extra = T_full - covered_length
+        extrap = interp[-1] + slope * np.arange(1, extra + 1)
+        aligned = np.concatenate([interp, extrap])
+    else:
+        # just truncate if we overshot
+        aligned = interp[:T_full]
+
+    return aligned
