@@ -125,6 +125,26 @@ class ViT4TS:
         pd.DataFrame
             DataFrame with 'start', 'end', 'severity' columns
         """
+        # 1. Predict anomaly scores
+        aligned_scores, timestamps = self.predict_scores(data)
+        
+        # 2. Convert to intervals
+        return self.get_intervals(aligned_scores, timestamps, self.alpha)
+
+    def predict_scores(self, data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Compute anomaly scores for the given data.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            DataFrame with 'timestamp' and 'value' columns
+            
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            (aligned_scores, timestamps)
+        """
         # 1. Convert Orion format to internal format
         values, timestamps = orion_to_internal(data)
         T_full = len(values)
@@ -170,8 +190,8 @@ class ViT4TS:
             )
 
             if not success:
-                warnings.warn("Failed to generate windowed images. Returning empty results.")
-                return pd.DataFrame(columns=["start", "end", "severity"])
+                warnings.warn("Failed to generate windowed images. Returning empty scores.")
+                return np.zeros(T_full), timestamps
 
             # 5. Run vision model inference
             if self.verbose:
@@ -180,27 +200,50 @@ class ViT4TS:
             anomaly_scores = self._run_inference(results_dir, base_series_id)
 
             if anomaly_scores is None or len(anomaly_scores) == 0:
-                warnings.warn("No anomaly scores generated. Returning empty results.")
-                return pd.DataFrame(columns=["start", "end", "severity"])
+                warnings.warn("No anomaly scores generated. Returning empty scores.")
+                return np.zeros(T_full), timestamps
 
         # 6. Align anomaly vector
         aligned_scores = align_anomaly_vector(
             anomaly_scores, T_full, self.window_size, step_size, n_windows
         )
+        
+        return aligned_scores, timestamps
+
+    def get_intervals(self, scores: np.ndarray, timestamps: np.ndarray, alpha: float = None) -> pd.DataFrame:
+        """
+        Convert anomaly scores to intervals using thresholding.
+        
+        Parameters
+        ----------
+        scores : np.ndarray
+            Anomaly scores
+        timestamps : np.ndarray
+            Timestamps corresponding to scores
+        alpha : float, optional
+            Threshold quantile. If None, uses self.alpha.
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with 'start', 'end', 'severity' columns
+        """
+        if alpha is None:
+            alpha = self.alpha
 
         # 7. Convert scores to intervals
         if self.verbose:
-            print("Converting anomaly scores to intervals...")
+            print(f"Converting anomaly scores to intervals (alpha={alpha})...")
 
         interval_indices, _, _ = compute_detection_intervals(
-            score_vector=aligned_scores,
-            alpha=self.alpha,
+            score_vector=scores,
+            alpha=alpha,
         )
 
         intervals = intervals_from_indices(
             interval_indices=interval_indices,
             timestamps=timestamps,
-            scores=aligned_scores,
+            scores=scores,
         )
 
         if self.verbose:

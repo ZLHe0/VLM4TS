@@ -13,3 +13,4 @@ scikit-learn==1.7.2
 scipy==1.15.3
 Pillow==12.0.0
 python-dotenv==1.2.1
+requests==2.32.5
