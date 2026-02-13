@@ -1,7 +1,12 @@
+<div align="center">
+
+<img src="asset/PSU.png" height="80px" alt="Penn State">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="asset/MIT.svg" height="80px" alt="MIT">
+
+---
+
 # [AAAI 2026 Oral] Harnessing Vision-Language Models for Time Series Anomaly Detection
 
-<div align="center">
-  
 [Paper](https://arxiv.org/abs/2506.06836) | [Quick Start](#quick-start) | [Reproduce Results](#reproduce-paper-results) | [Citation](#citation)
 
 </div>
